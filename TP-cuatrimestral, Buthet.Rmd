@@ -1,0 +1,125 @@
+---
+title: "TP Cuatrimestral"
+subtitle: "Análisis de datos de MIMIC3 para la asistencia en la toma de decisiones"
+author: "Juan Bautista Buthet, Valentina De la Torre"
+date: "06/06/2023"
+output: 
+  html_document:
+    theme: cosmo
+    toc: true
+    toc_float: true
+    code_folding: show
+    highlight: tango
+    css: styles.css
+---
+
+<style>
+body {
+  text-align: justify;
+}
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+library(tidyverse)
+library(dplyr)
+library(RSQLite)
+mimic_con <- dbConnect(RSQLite::SQLite(),"C:/Users/bauti/Austral/2023_01/AyED/Informe R/mimic3_demo.db")
+dbListTables(mimic_con)
+```
+
+# INTRODUCCION 
+Se utilizara la base de datos ***“MIMIC-III”*** abreviado de Medical Information Mart for Intensive Care, esta misma es una gran base de datos de libre acceso que comprende datos desidentificados relacionados con la salud de pacientes que permanecieron en unidades de cuidados críticos del Beth Israel Deaconess Medical Center entre 2001 y 2012. Precisamente trabajaremos con un subconjunto “demo”, que contiene información sobre 100 pacientes también presentes en la base de datos clínicos MIMIC-III. MIMIC-III consta de 26 tablas; 6 para seguimiento de pacientes, 8 son de datos colectados en cuidados intensivos, 7 son de datos almacenados en el hospital y 5 son diccionarios
+
+# DESARROLLO y RESULTADOS
+## <span style="color:darkblue; font-size:16px;"> **¿Cuáles son los diagnósticos más comunes entre los pacientes que fallecieron en la UCI?**</span>
+
+Es fundamental realizar una identificación de los diagnósticos más comunes entre los pacientes que fallecieron. Es importante para mejorar la atención y el tratamiento de los pacientes críticamente enfermos en la UCI. Gracias a una correcta identificación de los diagnósticos mas severos es posible enfatizar en en el cuidado de pacientes con dicho diagnostico, conllevando a reducir la mortalidad y mejorar la calidad de vida de los pacientes.
+
+```{r, include=FALSE}
+deaths <- tbl(mimic_con, "PATIENTS") %>% filter(!is.na(dod))
+diagnoses <- tbl(mimic_con, "DIAGNOSES_ICD") %>% inner_join(tbl(mimic_con, "D_ICD_DIAGNOSES"), by = "icd9_code") %>% 
+  select(subject_id, icd9_code, short_title)
+deaths_with_diagnoses <- deaths %>% inner_join(diagnoses, by = "subject_id") %>% select(icd9_code, short_title)
+top_diagnoses <- deaths_with_diagnoses %>% group_by(icd9_code, short_title) %>% summarise(count = n()) %>% arrange(desc(count)) %>% head(10)
+top_diagnoses
+```
+
+```{r, fig.width=10, fig.height=6}
+top_diagnoses %>% collect() %>% ggplot(aes(x = reorder(short_title, -count), y =count)) +
+    geom_bar(aes(fill=short_title), stat = "identity") +
+    labs(title = "TOP 10 Diseases in dead pacients", x = "Disease title", y = "Number of appearances") +
+    scale_x_discrete(labels=c("Hypertension\nNOS","Atrial\nfibrillation","Acute\nkidney\nfailure NOS","Congestive heart\nfailure, unspecified","Diabetes type II\nunspecified","Acute respiratry\nfailure",
+    "Hyperlipidemia\nNEC/NOS","Urin tract\ninfection NOS","Pneumonia, organism\nNOS","Anemia\nNOS ")) +
+    theme(legend.position = "none") + geom_text(aes(label = count), position = position_stack(vjust = .5))
+```
+
+* Notamos en el Grafico que hay mas de 100 diagnósticos totales si se suman todos. Esto se debe a que un paciente puede tener mas de un diagnostico.
+
+Vemos a simple vista que la Hypertension NOS (NOS: no especificado) es el diagnostico mas frecuente en pacientes fallecidos en la UCI sobrepasando los 50 diagnosticos y al segundo diagnostico mas frecuente, [Atrial Fibrillation](https://www.mayoclinic.org/es-es/diseases-conditions/atrial-fibrillation/symptoms-causes/syc-20350624), por 5.
+Le encontramos respuesta a este resultado en las características puntuales de la Hypertension y la Atrial Fibrillation tanto en sus causas como en sus implicaciones.
+
+### Principales 2 Diagnosticos {.tabset .tabset-fade .tabset-pills .unnumbered}
+
+#### Hypertension NOS {- .unnumbered}
+<img src="https://th.bing.com/th/id/R.34e2dfdc498b00232853b2fa0e010f82?rik=pz2jp5l7Yb28Qg&pid=ImgRaw&r=0" width="300">
+
+#### Atrial Fibrillation {- .unnumbered}
+<img src="https://www.cdc.gov/heartdisease/images/atrial-fibrillation.jpg" width="300">
+
+
+## <span style="color:darkblue; font-size:16px;"> **¿Cuál es el promedio de readmisiónes por pacientes en la UCI?**</span>
+
+Los administradores y/o directivos de la UCI pueden utilizar el promedio de readmision por paciente para determinar la calidad de la atención médica, lo que indica la eficacia de los tratamientos y los procesos de atención.
+
+El promedio de readmision por paciente es **1.36**, esto indica que de una muestra de 100 pacientes se estiman 136 readmisiones y por tanto significan 236 ingresos totales al hospital. Este resultado es significativo ya que deja en evidencia el elevado flujo de ingreso al hospital.
+Por otro lado, consideramos que la taza de readmision fue elevada. Un alto porcentaje podría indicar que la atención es de baja calidad e ineficaz.
+
+```{r, include=FALSE}
+icu_stays <- tbl(mimic_con, "ICUSTAYS")
+diagnoses_icd <- tbl(mimic_con, "DIAGNOSES_ICD")
+d_icd_diagnoses <- tbl(mimic_con, "D_ICD_DIAGNOSES")
+icd9_shortnames <- d_icd_diagnoses %>% inner_join(diagnoses_icd, by = "icd9_code") %>% select(subject_id, hadm_id, icd9_code, short_title, seq_num)
+n_admissions <- icu_stays %>% group_by(subject_id) %>% 
+  summarize(n_admissions = n_distinct(icustay_id))
+readmission_rate <- n_admissions %>% summarize(readmission_rate = mean(n_admissions, na.rm = TRUE))
+readmission_rate
+```
+
+## <span style="color:darkblue; font-size:16px;"> **¿Cuáles son las causas más comunes de estas readmisiones?**</span>
+
+Mediante la identificación de los diagnósticos más frecuentes a pacientes que reingresaron, los administradores y/o directivos pueden desarrollar estrategias efectivas para contrarrestar posibles errores, mejorar la calidad de atención y consecuentemente reducir una futura taza de reingreso (“congestionamiento” de gente en la UCI).
+
+```{r, include=FALSE}
+readmissions <- icu_stays %>% group_by(subject_id) %>% 
+  summarize(n_admissions = n_distinct(icustay_id)) %>% 
+  filter(n_admissions > 0) %>% 
+  left_join(icd9_shortnames, by = "subject_id") %>% 
+  filter(seq_num == 1) %>% select(icd9_code, short_title) %>%
+  count(icd9_code, short_title, sort = TRUE)
+readmissions
+```
+```{r}
+readmissions %>% 
+  collect() %>% 
+  mutate(n = ifelse(n >= 4 & n <= 15, as.character(n), "<= 3")) %>%
+  mutate(short_title = ifelse(n == "<= 3", "Other Diseases", short_title)) %>%
+  ggplot(aes(x = reorder(short_title, -as.numeric(n)), y = as.numeric(n))) +
+  geom_bar(aes(fill = short_title), stat = "identity") +
+  geom_text(aes(label = ifelse(n == "<= 3", "<= 3", n)), position = position_stack(vjust = 0.5)) +
+  geom_bar(data = data.frame(short_title = "Other Diseases", y = 3), 
+           fill = "gray", stat = "identity", width = 0.9, aes(x = short_title, y = y)) +
+  geom_text(data = data.frame(short_title = "Other Diseases", y = 1.5), 
+            aes(x = short_title, y = y, label = "<= 3"), vjust = -0.5) +
+  scale_x_discrete(labels=c("Septicemia\nNOS","Pneumonia,\norganism NOS","Acute respiratry\nfailure","Subendo infarct,\ninitial",
+                            "Congestive heart\nfailure NOS", "Other Diseases")) +
+  labs(title = "Number of readmission caused by a disease in dead pacients", x = "Disease title", y = "Number of readmissions") +
+  theme(legend.position = "none")
+```
+
+A traves del grafico y cuentas obtenemos que el 11% de las readmisiones al hospital son consecuencia de pacientes diagnosticados con [Septicemia NOS](https://www.mayoclinic.org/es-es/diseases-conditions/sepsis/symptoms-causes/syc-20351214#Descripci%C3%B3n%20General). A su vez, notamos la importante diferencia con la segunda enfermedad, Pneumonia, siendo la misma diagnosticada en pacientes 9 readmisiones por debajo que la septicemia. Justificamos este resultado basándonos en la gravedad de los síntomas de esta enfermedad (Septicemia) y en su frecuencia inusual. Esto se debe a que algunos de sus síntomas, como confusión o respiración rápida, requieren atención médica de emergencia. Para agregar, tan solo 5 enfermedades son causantes de mas de 3 readmisiones al hospital. Esto ultimo afirma la relevancia de este estudio, de esta información, ya que se deduce que el caudal de readmisiones a la UCI no esta ligado a todas las enfermedades sino que a unas pocas.
+
+# CONCLUSION
+En resumen, este análisis de datos basado en la base de datos MIMIC-III ofrece información valiosa para la toma de decisiones en la atención médica en la UCI. Los resultados obtenidos destacan la importancia de identificar y tratar adecuadamente los diagnósticos más comunes entre los pacientes fallecidos, así como de implementar medidas para reducir las tasas de readmisión y mejorar la calidad de la atención médica.
+
+
